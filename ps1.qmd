@@ -1,0 +1,39 @@
+```{julia}
+using Turing
+using ArviZ
+using Distributions
+using Random
+using NCDatasets
+using Optim
+using Unitful
+```
+
+```{julia}
+using CairoMakie
+CairoMakie.activate!(type="svg")
+
+using Downloads
+using DataFrames
+ENV["DATAFRAMES_ROWS"] = 5 
+
+using TidierData
+lab_dir = dirname(@__FILE__)
+include("util.jl")
+
+
+rng = MersenneTwister(345)
+```
+
+```{julia}
+
+stations, rainfall_data = let 
+    precip_fname = joinpath(lab_dir, 
+    "dur01d_ams_na14v11.txt")
+    url = "https://hdsc.nws.noaa.gov/pub/hdsc/data/tx/dur01d_ams_na14v11.txt"
+
+    if !isfile(precip_fname)
+        Downloads.download(url, precip_fname)
+    end
+    read_noaa_data(precip_fname)
+end
+```
