@@ -37,3 +37,11 @@ stations, rainfall_data = let
     read_noaa_data(precip_fname)
 end
 ```
+
+```{julia}
+@chain stations begin
+    @arrange(desc(years_of_data))
+    @slice_head(n=15)
+end
+show(stations[1:15, :], allrows = true)
+```
