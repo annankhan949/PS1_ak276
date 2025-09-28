@@ -517,3 +517,4 @@ function posterior_bands!(ax, dists::Vector{<:Distribution}, rts; ci=0.90, kwarg
     band!(ax, rts, lower_bound, upper_bound; kwargs...)
     return ax
 end
+
