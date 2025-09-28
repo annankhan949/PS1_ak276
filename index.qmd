@@ -43,6 +43,12 @@ code-line-numbers: false
 code-block-font-size: "0.85em"
 ---
 
+```{julia}
+using Pkg
+
+Pkg.activate(".")
+Pkg.instantiate()
+```
 
 ```{julia}
 using IJulia
@@ -105,10 +111,10 @@ end
 
 ```{julia}
 stations_most = @chain stations begin
-                    @filter(years_of_data > 50)
-                    @arrange(desc(years_of_data))
-                    @slice_head(n=15)
-                end
+     @filter(years_of_data > 50)
+     @arrange(desc(years_of_data))
+     @slice_head(n=15)
+end
 show(stations_most[1:15, :], allrows = true)
 ```
 
@@ -287,10 +293,10 @@ end
 
 ```{julia}
 return_level_priors = [
-    ReturnLevelPrior(2, 3.0, 1.5),
-    ReturnLevelPrior(10, 6.0, 3.0),
+    ReturnLevelPrior(2, 2.0, 1.0),
+    ReturnLevelPrior(10, 4.0, 2.5),
     ReturnLevelPrior(50, 10.0, 6),
-    ReturnLevelPrior(100, 14.0, 8),
+    ReturnLevelPrior(100, 12.0, 8),
 ]
 ```
 
@@ -335,4 +341,132 @@ fig_priorDist = let
     posterior_mean_curve!(ax, prior_GEVs, rts; color=:blue, linewidth=3)
     fig
 end
+```
+
+### Posterior Distribution vs MLE Results
+```{julia}
+y_obs = collect(skipmissing(ustrip.(u"inch", austin_precip.rainfall)))
+
+bayes = gev_model_quantile_priors(y_obs; return_level_priors=return_level_priors)
+```
+
+```{julia}
+mle_estimate = maximum_likelihood(bayes, NelderMead(); maxiters=1_000)
+
+mle_dist = GeneralizedExtremeValue(mle_estimate.values[1], exp(mle_estimate.values[2]), mle_estimate.values[3])
+```
+
+```{julia}
+posterior_idata = let
+    fname = joinpath(lab_dir, "posterior_data.nc")
+    overwrite = true
+    load_or_sample(fname, bayes; overwrite=overwrite)
+end
+posterior_GEVs = vec(GeneralizedExtremeValue.(posterior_idata.posterior.μ, exp.(posterior_idata.posterior.log_σ), posterior_idata.posterior.ξ))
+
+post_summary = ArviZ.summarize(posterior_idata)
+
+post_summary
+```
+
+```{julia}
+function plot_trace_diagnostics(idata, title_prefix="")  #
+    fig = Figure(size=(1200, 400))
+
+    
+    μ_arr = Array(idata.posterior.μ)  
+    log_σ_arr = Array(idata.posterior.log_σ)  
+    ξ_arr = Array(idata.posterior.ξ)  
+    ndraws, nchains = size(μ_arr)  
+
+    ax1 = Axis(fig[1, 1], xlabel="Iteration", ylabel="μ",
+        title="$title_prefix Location Parameter Trace")
+    for c in 1:nchains  
+        lines!(ax1, 1:ndraws, μ_arr[:, c], label="Chain $(c)")  
+    end
+    axislegend(ax1; position=:lb)
+
+    ax2 = Axis(fig[1, 2], xlabel="Iteration", ylabel="log(σ)",
+        title="$title_prefix Log-Scale Parameter Trace")
+    for c in 1:nchains
+        lines!(ax2, 1:ndraws, log_σ_arr[:, c])
+    end
+
+    ax3 = Axis(fig[1, 3], xlabel="Iteration", ylabel="ξ",
+        title="$title_prefix Shape Parameter Trace")
+    for c in 1:nchains
+        lines!(ax3, 1:ndraws, ξ_arr[:, c])
+    end
+
+    return fig
+end
+fig_trace_primary = plot_trace_diagnostics(posterior_idata, "Primary Station:")
+```
+
+*Good distribution between bulk and tail portions and r_hat of 1, model converges*
+
+```{julia}
+let
+    fig = Figure(size=(900, 500))
+    rts = logrange(1.1, 250, 500)
+    ax1 = Axis(fig[1, 1], xlabel="Return Period (years)", ylabel="Return Level (inches)",
+        title="Return Level Uncertainty: Prior vs Posterior", xscale=log10, xticks=[1, 2, 5, 10, 25, 50, 100, 250])
+    posterior_bands!(ax1, prior_GEVs, rts; color=(:blue, 0.2), ci=0.90, label="Prior 90% CI")
+    posterior_bands!(ax1, posterior_GEVs, rts; color=(:orange, 0.4), ci=0.90, label="Posterior 90% CI")
+    posterior_mean_curve!(ax1, posterior_GEVs, rts; color=:blue, linewidth=3, label="Posterior Mean")
+
+    mean_return_levels = [quantile(mle_dist, 1 - 1 / T) for T in rts]
+    lines!(ax1, rts, mean_return_levels, color=:red, linewidth=3, label="MLE")
+
+    axislegend(ax1; position=:lt)
+    fig
+end
+```
+
+### 50 and 100-year Return Estimates
+
+```{julia}
+# -- Compute posterior return levels at 50 and 100 years --
+T_years = [50, 100]
+quantiles = 1 .- 1 ./T_years  # e.g., [0.98, 0.99]
+
+posterior_rl_samples = [quantile.(posterior_GEVs, q) for q in quantiles]
+
+# -- Compute summary statistics --
+using Statistics
+
+summary_df = DataFrame(
+    ReturnPeriod = T_years,
+    Mean = [mean(samples) for samples in posterior_rl_samples],
+    Lower90 = [quantile(samples, 0.05) for samples in posterior_rl_samples],
+    Upper90 = [quantile(samples, 0.95) for samples in posterior_rl_samples]
+)
+
+println("Posterior return level estimates with 90% credible intervals:")
+summary_df
+
+fig_post_rl = let
+    fig = Figure(size=(800, 500))
+    ax = Axis(fig[1, 1],
+        title="50-year and 100-year Return Levels (Posterior)",
+        xlabel="Return Period (years)",
+        ylabel="Return Level (inches)",
+        xscale=log10,
+        xticks=T_years
+    )
+
+    # Plot posterior means
+    scatter!(ax, T_years, summary_df.Mean, color=:blue, markersize=10, label="Posterior Mean")
+
+    # Add 90% CI error bars
+    for (i, T) in enumerate(T_years)
+        y_low = summary_df.Lower90[i]
+        y_high = summary_df.Upper90[i]
+        lines!(ax, [T, T], [y_low, y_high], color=:blue, linewidth=2)
+    end
+
+    axislegend(ax, position=:lt)
+    fig
+end
+
 ```
