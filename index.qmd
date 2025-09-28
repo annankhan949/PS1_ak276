@@ -150,9 +150,9 @@ precip = collect(skipmissing(ustrip.(u"inch", austin_precip.rainfall)))
 
 # Define Bayesian GEV model and priors based on data
 @model function gev_model(precip)
-	μ ~ Normal(5, 2)           
-	log_σ ~ Normal(1.5, 0.5) #A little less than most of the data is near μ    
-	ξ ~ Normal(0.0, 0.25) #For Gumbel Distribution ξ = 0, extreme events possible but not as likely as >0       
+	μ ~ Normal(2, 1)           
+	log_σ ~ Normal(1.0, 0.5) #A little less than most of the data is near μ    
+	ξ ~ Normal(0.1, 0.1) #Data has some extremes but those are spaced out, slightly heavy tail        
 
 	σ = exp(log_σ)              
 
@@ -234,26 +234,105 @@ end
 	T_smooth = create_return_period_range(1.1, 250, 100) 
 
 	# Extremes.jl MLE curve
-	levels_extremes = [quantile(extremes_dist, 1 - 1 / T) for T in T_smooth]  # <3>
+	levels_extremes = [quantile(extremes_dist, 1 - 1 / T) for T in T_smooth]  
 	lines!(ax, T_smooth, levels_extremes, color = :blue, linewidth = 2, label = "Extremes MLE")
 
 	# Turing.jl curve  
-	levels_turing = [quantile(turing_dist, 1 - 1 / T) for T in T_smooth]  # <5>
+	levels_turing = [quantile(turing_dist, 1 - 1 / T) for T in T_smooth]  
 	lines!(ax, T_smooth, levels_turing, color = :red, linewidth = 2, linestyle = :dash, label = "Turing MLE")
 
 	# Empirical data points
-	emp_levels, emp_periods = weibull_plotting_positions(station_data.rainfall)  # <6>
+	emp_levels, emp_periods = weibull_plotting_positions(station_data.rainfall) 
 	scatter!(ax, emp_periods, emp_levels,
 		color = :black, markersize = 8, marker = :circle,
 		label = "Observed Data")
 
 	# Standard return periods
 	return_periods = [5, 10, 25, 50, 100, 250]
-	ax.xticks = return_periods  # <7>
+	ax.xticks = return_periods  
 
-	axislegend(ax, position = :rb)  # <8>
+	axislegend(ax, position = :rb)  
 	return fig
 end
 
 plot_gev_comparison(austin_precip, extremes_dist, turing_dist, austin_station)
+```
+
+### Bayesian Inference with MCMC
+*Using the return level method as I feel I have a good understanding of rainfall in Austin*
+
+```{julia}
+function load_or_sample(fname, model; overwrite=false, n_chains=4, samples_per_chain=2000, sampler=NUTS(), threading=MCMCThreads(), rng=rng)
+    idata = try
+        @assert !overwrite "Reading from cache disabled by overwrite=true"  
+        idata = ArviZ.from_netcdf(fname)
+        @info "Loaded cached prior samples from $fname"
+        return idata
+    catch
+        chains = sample(
+            model,
+            sampler,
+            threading,
+            Int(ceil(samples_per_chain * n_chains)),  
+            n_chains,
+            verbose=false,
+        )
+        idata = ArviZ.from_mcmcchains(chains)
+        ArviZ.to_netcdf(idata, fname)
+        @info "Sampled and cached prior samples to $fname"
+        return idata
+    end
+end
+```
+
+```{julia}
+return_level_priors = [
+    ReturnLevelPrior(2, 3.0, 1.5),
+    ReturnLevelPrior(10, 6.0, 3.0),
+    ReturnLevelPrior(50, 10.0, 6),
+    ReturnLevelPrior(100, 14.0, 8),
+]
+```
+
+```{julia}
+@model function gev_model_quantile_priors(y; return_level_priors=[])
+	μ ~ Normal(2, 1)           
+	log_σ ~ Normal(1.0, 0.5)  
+	ξ ~ Normal(0.1, 0.1)
+    σ = exp(log_σ)
+    dist = GeneralizedExtremeValue(μ, σ, ξ)
+
+	for prior in return_level_priors
+		rl = quantile(dist, prior.quantile)
+		if rl > 0.1 
+		Turing.@addlogprob!(loglikelihood(prior.distribution, rl))  # <2>
+        else
+            Turing.@addlogprob!(-Inf)  # <3>
+        end
+    end
+
+	if length(y) > 0 
+		y .~ dist
+	end
+end
+
+prior_idata = let
+    fname = joinpath(lab_dir, "prior.nc")
+    model = gev_model_quantile_priors([]; return_level_priors=return_level_priors)
+    overwrite = true
+    load_or_sample(fname, model; overwrite=false)
+end
+prior_GEVs = vec(GeneralizedExtremeValue.(prior_idata.posterior.μ, exp.(prior_idata.posterior.log_σ), prior_idata.posterior.ξ))
+```
+
+```{julia}
+fig_priorDist = let
+    rts = logrange(1.1, 250, 500)
+    xticks = [1, 2, 5, 10, 25, 50, 100, 250]
+    fig = Figure(size=(1200, 600))
+    ax = Axis(fig[1, 1], xlabel="Return Period (years)", ylabel="Return Level (inches)", title="Prior Predictive Distribution", xscale=log10, xticks=xticks)
+    posterior_bands!(ax, prior_GEVs, rts; color=(:blue, 0.2), ci=0.90)
+    posterior_mean_curve!(ax, prior_GEVs, rts; color=:blue, linewidth=3)
+    fig
+end
 ```
