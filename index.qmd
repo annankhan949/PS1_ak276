@@ -1,0 +1,259 @@
+---
+title: "CEVE 543 Fall 2025 Problem Set 1"
+subtitle: "Estimating GEV parameters and characterizing uncertainty"
+author: ak276
+date: "2025-09-27"
+type: "PS1 ak276"
+module: 1
+week: 3
+topics: ["Parameter estimation", "Turing.jl", "Confidence intervals"]
+objectives:
+
+ps_connection: 
+
+engine: julia
+
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-block-bg: "#f8f8f8"
+    code-block-border-left: "#e1e4e5"
+    theme: simplex
+    number-sections: true
+    fig-format: svg
+    code-annotations: hover
+  typst:
+    fontsize: 11pt
+    margin: 
+      x: 1in
+      y: 1in
+    number-sections: true
+    fig-format: svg
+    echo: true
+    code-annotations: true
+
+execute: 
+  cache: true
+  freeze: auto
+
+# Code formatting options
+code-overflow: wrap
+code-line-numbers: false
+code-block-font-size: "0.85em"
+---
+
+
+```{julia}
+using IJulia
+using Turing
+using ArviZ
+using Distributions
+using Random
+using NCDatasets
+using Optim
+using Unitful
+using Downloads
+using Extremes
+using ColorSchemes
+using GeoMakie
+
+using Makie.Unitful
+using Makie.Dates
+```
+
+```{julia}
+using CairoMakie
+CairoMakie.activate!(type="svg")
+
+using Downloads
+using DataFrames
+ENV["DATAFRAMES_ROWS"] = 5 
+
+using TidierData
+lab_dir = dirname(@__FILE__)
+include("util.jl")
+
+
+rng = MersenneTwister(345)
+```
+
+## Task 1 {.unnumbered}
+
+### Data Extraction and Visualization
+
+```{julia}
+
+stations, rainfall_data = let 
+    precip_fname = joinpath(lab_dir, 
+    "dur01d_ams_na14v11.txt")
+    url = "https://hdsc.nws.noaa.gov/pub/hdsc/data/tx/dur01d_ams_na14v11.txt" 
+
+    if !isfile(precip_fname)
+        Downloads.download(url, precip_fname)
+    end
+    read_noaa_data(precip_fname)
+end
+```
+
+```{julia}
+@chain stations begin  
+	@select(stnid, noaa_id, name, state, latitude, longitude, years_of_data)  
+end
+```
+
+
+```{julia}
+stations_most = @chain stations begin
+                    @filter(years_of_data > 50)
+                    @arrange(desc(years_of_data))
+                    @slice_head(n=15)
+                end
+show(stations_most[1:15, :], allrows = true)
+```
+
+```{julia}
+my_stnid = 112
+
+austin_station = @chain stations begin
+    @filter(stnid == !!my_stnid)
+    first
+end
+
+austin_precip = @chain rainfall_data begin
+    @filter(stnid == !!my_stnid)
+    @arrange(date)
+end 
+
+rainfall_conversion = Makie.UnitfulConversion(u"inch")
+
+function plot_time_series(station_row, rainfall_df)
+	fig = Figure(size = (800, 400))
+	ax = Axis(fig[1, 1],
+		ylabel = "Annual Maximum 24-Hour Rainfall [inch]",
+		title = "$(station_row.noaa_id): $(station_row.name)",
+		dim2_conversion = rainfall_conversion)
+
+	lines!(ax, rainfall_df.date, rainfall_df.rainfall, color = :blue, linewidth = 2)
+	scatter!(ax, rainfall_df.date, rainfall_df.rainfall, markersize = 10, marker = :circle, strokewidth = 2, color = :transparent)
+
+	fig
+end
+
+plot_time_series(austin_station, austin_precip)
+```
+
+### Bayesian MLE Approach with Turing.jl
+```{julia}
+
+precip = collect(skipmissing(ustrip.(u"inch", austin_precip.rainfall)))
+
+# Define Bayesian GEV model and priors based on data
+@model function gev_model(precip)
+	μ ~ Normal(5, 2)           
+	log_σ ~ Normal(1.5, 0.5) #A little less than most of the data is near μ    
+	ξ ~ Normal(0.0, 0.25) #For Gumbel Distribution ξ = 0, extreme events possible but not as likely as >0       
+
+	σ = exp(log_σ)              
+
+	precip .~ GeneralizedExtremeValue(μ, σ, ξ) 
+end
+
+austin_MLE_Turing = maximum_likelihood(gev_model(precip), NelderMead(); initial_params = [5, 0.5, 0])
+
+μ_turing = austin_MLE_Turing.values[:μ]           
+σ_turing = exp(austin_MLE_Turing.values[:log_σ])  
+ξ_turing = austin_MLE_Turing.values[:ξ] 
+
+turing_params = DataFrame(
+	Parameter = ["Location (μ)", "Scale (σ)", "Shape (ξ)"],
+	Value = [round(μ_turing, digits = 3), round(σ_turing, digits = 3), round(ξ_turing, digits = 3)],
+)
+println("GEV Parameters [Turing.jl]:")
+turing_params
+
+turing_dist = GeneralizedExtremeValue(μ_turing, σ_turing, ξ_turing)
+```
+
+
+### MLE Implementation with Extremes.jl
+```{julia}
+
+#Fit the GEV with MLE
+austin_MLE_Extreme = gevfit(precip)
+
+#Parameters into a data fram
+μ_extremes = location(austin_MLE_Extreme)[1]  
+σ_extremes = scale(austin_MLE_Extreme)[1]       
+ξ_extremes = shape(austin_MLE_Extreme)[1]     
+
+extreme_params = DataFrame(
+    Parameter = ["Location (μ)", "Scale (σ)", "Shape (ξ)"],
+   Value = [round(μ_extremes, digits = 3), round(σ_extremes, digits = 3), round(ξ_extremes, digits = 3)],
+)
+println("GEV Parameters [Extremes.jl]:")
+extreme_params
+
+extremes_dist = GeneralizedExtremeValue(μ_extremes, σ_extremes, ξ_extremes)
+```
+
+### Benchmark of Turing MLE using Extremes MLE
+```{julia}
+params_comparison = DataFrame(
+	Method = ["Extremes MLE", "Turing MLE"],
+	μ = [round(μ_extremes, digits = 3), round(μ_turing, digits = 3)],
+	σ = [round(σ_extremes, digits = 3), round(σ_turing, digits = 3)],
+	ξ = [round(ξ_extremes, digits = 3), round(ξ_turing, digits = 3)],
+)
+params_comparison
+
+# Compare return levels
+return_periods = [5, 10, 25, 50, 100]
+return_levels_comparison = DataFrame(
+	T_years = return_periods,
+	Extremes_MLE = [round(quantile(extremes_dist, 1 - 1 / T), digits = 2) for T in return_periods],
+	Turing_MLE = [round(quantile(turing_dist, 1 - 1 / T), digits = 2) for T in return_periods],
+)
+return_levels_comparison
+#Turing likelihood is accurate as parameters match
+```
+
+```{julia}
+function plot_gev_comparison(station_data, extremes_dist, turing_dist, station_info)
+	fig = Figure()
+	ax = Axis(fig[1, 1],
+		xlabel = "Return Period (years)",
+		ylabel = "Return Level (inches)",
+		title = "GEV Fit Comparison\n$(station_info.noaa_id): $(station_info.name)",
+		xscale = log10)  
+
+function create_return_period_range(min_period=1.1, max_period=250, n_points=100)
+    return 10 .^ range(log10(min_period), log10(max_period), length=n_points)
+end
+
+	T_smooth = create_return_period_range(1.1, 250, 100) 
+
+	# Extremes.jl MLE curve
+	levels_extremes = [quantile(extremes_dist, 1 - 1 / T) for T in T_smooth]  # <3>
+	lines!(ax, T_smooth, levels_extremes, color = :blue, linewidth = 2, label = "Extremes MLE")
+
+	# Turing.jl curve  
+	levels_turing = [quantile(turing_dist, 1 - 1 / T) for T in T_smooth]  # <5>
+	lines!(ax, T_smooth, levels_turing, color = :red, linewidth = 2, linestyle = :dash, label = "Turing MLE")
+
+	# Empirical data points
+	emp_levels, emp_periods = weibull_plotting_positions(station_data.rainfall)  # <6>
+	scatter!(ax, emp_periods, emp_levels,
+		color = :black, markersize = 8, marker = :circle,
+		label = "Observed Data")
+
+	# Standard return periods
+	return_periods = [5, 10, 25, 50, 100, 250]
+	ax.xticks = return_periods  # <7>
+
+	axislegend(ax, position = :rb)  # <8>
+	return fig
+end
+
+plot_gev_comparison(austin_precip, extremes_dist, turing_dist, austin_station)
+```
