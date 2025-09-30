@@ -453,4 +453,54 @@ end
 
 ## Task 2 {.unnumbered}
 
-###
+### Multi-Station GEV 
+```{julia}
+nearest_stations = find_nearest_stations(austin_station, stations, 5)
+
+nearest_stnids = [10, 787, 752, 468]
+```
+
+*going to use the same priors as I did for the Austin station, assuming the stations are similar in geographical properties to Austin considering they are close by*
+```{julia}
+function TurExtremeGEV_station(stnid, stations, rainfall_data)
+    # station info and precip (use plain filter/sort rather than macro pipelines), I was getting a weird error about parse_desc being missing so I had to reset the sorting to not use the macro
+    station_info = first(filter(r -> r.stnid == stnid, stations))
+    station_precip = sort(filter(r -> r.stnid == stnid, rainfall_data), :date)
+
+    precip = collect(skipmissing(ustrip.(u"inch", station_precip.rainfall)))
+
+    # Turing MLE 
+    turing_fit = maximum_likelihood(gev_model(precip), NelderMead(); initial_params = [2.0, 1.0, 0.1])
+    μ_t = turing_fit.values[:μ]
+    σ_t = exp(turing_fit.values[:log_σ])
+    ξ_t = turing_fit.values[:ξ]
+    turing_dist = GeneralizedExtremeValue(μ_t, σ_t, ξ_t)
+
+    # Extremes.jl MLE
+    station_MLE_Extreme = gevfit(precip)
+    μ_extremes = location(station_MLE_Extreme)[1]
+    σ_extremes = scale(station_MLE_Extreme)[1]
+    ξ_extremes = shape(station_MLE_Extreme)[1]
+    extremes_dist = GeneralizedExtremeValue(μ_extremes, σ_extremes, ξ_extremes)
+
+    # Comparison tables
+   params_comparison = DataFrame(
+	Method = ["Extremes MLE", "Turing MLE"],
+	μ = [round(μ_extremes, digits = 3), round(μ_t, digits = 3)],
+	σ = [round(σ_extremes, digits = 3), round(σ_t, digits = 3)],
+	ξ = [round(ξ_extremes, digits = 3), round(ξ_t, digits = 3)],
+    )
+    params_comparison
+
+    # Compare return levels
+    return_periods = [5, 10, 25, 50, 100]
+    return_levels_comparison = DataFrame(
+        T_years = return_periods,
+        Extremes_MLE = [round(quantile(extremes_dist, 1 - 1 / T), digits = 2) for T in return_periods],
+        Turing_MLE = [round(quantile(turing_dist, 1 - 1 / T), digits = 2) for T in return_periods],
+    )
+    return_levels_comparison
+    end
+
+```
+
