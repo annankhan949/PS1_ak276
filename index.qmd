@@ -61,6 +61,7 @@ using Optim
 using Unitful
 using Downloads
 using Extremes
+using Statistics
 using ColorSchemes
 using GeoMakie
 
@@ -265,7 +266,7 @@ plot_gev_comparison(austin_precip, extremes_dist, turing_dist, austin_station)
 ```
 
 ### Bayesian Inference with MCMC
-*Using the return level method as I feel I have a good understanding of rainfall in Austin*
+*Using the return level method as I feel I have a good understanding of rainfall in Austin, priors are based on Austin dataset and set up to follow data trends. Return levels were assumed based on looking at the scatterplot of data*
 
 ```{julia}
 function load_or_sample(fname, model; overwrite=false, n_chains=4, samples_per_chain=2000, sampler=NUTS(), threading=MCMCThreads(), rng=rng)
@@ -425,3 +426,31 @@ end
 
 ### 50 and 100-year Return Estimates
 
+```{julia}
+rl_50 = [quantile(dist, 1 - 1/50) for dist in posterior_GEVs]
+rl_100 = [quantile(dist, 1 - 1/100) for dist in posterior_GEVs]
+
+# 95% uncertainty bounds
+rl_50_ci = quantile(rl_50, [0.025, 0.975])  
+rl_100_ci = quantile(rl_100, [0.025, 0.975])
+
+fig_return_hists = let
+    fig = Figure(size=(1000, 400))
+
+    # Histogram for 50-year return level
+    ax1 = Axis(fig[1, 1], xlabel="50-Year Return Level (inches)", ylabel="Frequency",
+               title="Posterior: 50-Year Return Level")
+    hist!(ax1, rl_50, bins=30, color=(:blue, 0.6), strokecolor=:black)
+    vlines!(ax1, [rl_50_ci[1], rl_50_ci[2]], color=:black, linestyle=:dash)
+    # Histogram for 100-year return level
+    ax2 = Axis(fig[1, 2], xlabel="100-Year Return Level (inches)", ylabel="Frequency",
+               title="Posterior: 100-Year Return Level")
+    hist!(ax2, rl_100, bins=30, color=(:green, 0.6), strokecolor=:black)
+    vlines!(ax2, [rl_100_ci[1], rl_50_ci[2]], color=:black, linestyle=:dash)
+    fig
+end
+```
+
+## Task 2 {.unnumbered}
+
+###
