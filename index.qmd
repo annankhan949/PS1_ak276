@@ -226,7 +226,7 @@ return_levels_comparison
 ```
 
 ```{julia}
-function plot_gev_comparison(station_data, extremes_dist, turing_dist, station_info)
+function plot_gev_comparison!(station_data, extremes_dist, turing_dist, station_info)
 	fig = Figure()
 	ax = Axis(fig[1, 1],
 		xlabel = "Return Period (years)",
@@ -461,46 +461,97 @@ nearest_stnids = [10, 787, 752, 468]
 ```
 
 *going to use the same priors as I did for the Austin station, assuming the stations are similar in geographical properties to Austin considering they are close by*
+
 ```{julia}
-function TurExtremeGEV_station(stnid, stations, rainfall_data)
-    # station info and precip (use plain filter/sort rather than macro pipelines), I was getting a weird error about parse_desc being missing so I had to reset the sorting to not use the macro
-    station_info = first(filter(r -> r.stnid == stnid, stations))
-    station_precip = sort(filter(r -> r.stnid == stnid, rainfall_data), :date)
+function Turing_MLE_Params(stnid, stations, rainfall_data)
+    # Dictionary to hold a DataFrame of GEV parameters for each station
+    results = Dict()
 
-    precip = collect(skipmissing(ustrip.(u"inch", station_precip.rainfall)))
+    for stn_id in stnid
+         #1. Filter station row
+        station_row = filter(row -> row.stnid == stn_id, stations)
+        station_row = first(station_row, 1)  # assuming only one row per stnid
 
-    # Turing MLE 
-    turing_fit = maximum_likelihood(gev_model(precip), NelderMead(); initial_params = [2.0, 1.0, 0.1])
-    μ_t = turing_fit.values[:μ]
-    σ_t = exp(turing_fit.values[:log_σ])
-    ξ_t = turing_fit.values[:ξ]
-    turing_dist = GeneralizedExtremeValue(μ_t, σ_t, ξ_t)
+        #2. Filter rainfall data for this station and sort by date
+        station_data = filter(row -> row.stnid == stn_id, rainfall_data)
+        sort!(station_data, :date)
 
-    # Extremes.jl MLE
-    station_MLE_Extreme = gevfit(precip)
-    μ_extremes = location(station_MLE_Extreme)[1]
-    σ_extremes = scale(station_MLE_Extreme)[1]
-    ξ_extremes = shape(station_MLE_Extreme)[1]
-    extremes_dist = GeneralizedExtremeValue(μ_extremes, σ_extremes, ξ_extremes)
+        # 3. Preprocess rainfall values
+        precip = collect(skipmissing(ustrip.(u"inch", station_data.rainfall)))
 
-    # Comparison tables
-   params_comparison = DataFrame(
-	Method = ["Extremes MLE", "Turing MLE"],
-	μ = [round(μ_extremes, digits = 3), round(μ_t, digits = 3)],
-	σ = [round(σ_extremes, digits = 3), round(σ_t, digits = 3)],
-	ξ = [round(ξ_extremes, digits = 3), round(ξ_t, digits = 3)],
-    )
-    params_comparison
+        # 4. Define and fit the model
+        @model function gev_model(precip)
+            μ ~ Normal(2, 1)
+            log_σ ~ Normal(1.0, 0.5)
+            ξ ~ Normal(0.1, 0.1)
+            σ = exp(log_σ)
+            precip .~ GeneralizedExtremeValue(μ, σ, ξ)
+        end
 
-    # Compare return levels
-    return_periods = [5, 10, 25, 50, 100]
-    return_levels_comparison = DataFrame(
-        T_years = return_periods,
-        Extremes_MLE = [round(quantile(extremes_dist, 1 - 1 / T), digits = 2) for T in return_periods],
-        Turing_MLE = [round(quantile(turing_dist, 1 - 1 / T), digits = 2) for T in return_periods],
-    )
-    return_levels_comparison
+        mle_result = maximum_likelihood(
+            gev_model(precip), 
+            NelderMead(); 
+            initial_params = [2.0, 0.5, 0.1]
+        )
+
+        # 5. Extract and store parameters
+        μ_t = mle_result.values[:μ]
+        σ_t = exp(mle_result.values[:log_σ])
+        ξ_t = mle_result.values[:ξ]
+
+        param_df = DataFrame(
+            Parameter = ["Location (μ)", "Scale (σ)", "Shape (ξ)"],
+            Value = [μ_t, σ_t, ξ_t],
+            Rounded = round.([μ_t, σ_t, ξ_t]; digits=3),
+        )
+
+        results[stn_id] = param_df
     end
+
+    return results
+end
+```
+
+```{julia}
+Combined_results = Turing_MLE_Params(nearest_stnids, stations, rainfall_data)
+for (stn_id, df) in Combined_results
+    println("Results for station ID: $stn_id")
+    display(df)
+    println("\n" * "#"^40 * "\n")  #looked up a seperator to make Turing GEV results easier to view
+end
+```
+
+*Results from each station are similar but not the exact same as eachother or the Austin Station*
+
+### Multi-Station 50-year Return Level Estimate Comparison
+
+```{julia}
+function return_level_gev(μ, σ, ξ, T)
+    return_lvl = [round(quantile(extremes_dist, 1 - 1 / T), digits = 2)]
+end
 
 ```
 
+```{julia}
+return_period = 50 
+return_level_summary = DataFrame(Station_ID = Int[], Return_Level = Float64[])
+
+for (stn_id, df) in Combined_results
+    μ = df[df.Parameter .== "Location (μ)", :Value][1]
+    σ = df[df.Parameter .== "Scale (σ)", :Value][1]
+    ξ = df[df.Parameter .== "Shape (ξ)", :Value][1]
+
+    # Compute return level
+    rl = return_level_gev(μ, σ, ξ, return_period)
+
+    # Store the result
+    push!(return_level_summary, (
+    Station_ID = stn_id,
+    Return_Level = round(return_level_gev(μ, σ, ξ, return_period)[1]; digits=3)
+))
+end
+
+# Display the summary table
+println("Return Level Summary for $return_period-Year Period:")
+display(return_level_summary)
+```
