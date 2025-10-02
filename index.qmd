@@ -25,7 +25,7 @@ format:
     code-annotations: true
 
 execute: 
-  cache: true
+  cache: false
   freeze: auto
 
 code-overflow: wrap
