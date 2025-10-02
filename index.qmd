@@ -1,13 +1,16 @@
 ---
 title: "CEVE 543 Fall 2025 Problem Set 1"
-subtitle: "Estimating GEV parameters and characterizing uncertainty"
+subtitle: "Nonstationary Rainfall Frequency Analysis (Due Oct 3)"
 author: ak276
 date: "2025-09-27"
+type: "PS1"
+
+engine: julia
 
 format:
   html:
     toc: true
-    toc-depth: 2
+    toc-depth: 3
     code-block-bg: "#f8f8f8"
     code-block-border-left: "#e1e4e5"
     theme: simplex
@@ -16,18 +19,19 @@ format:
     code-annotations: hover
   typst:
     fontsize: 11pt
-    margin: 
+    margin:
       x: 1in
       y: 1in
     number-sections: true
     fig-format: svg
-    echo: true
-    code-annotations: true
+    echo: false
+    code-annotations: false
 
-execute: 
+execute:
   cache: false
   freeze: auto
-
+  notebook-output: false
+# Code formatting options
 code-overflow: wrap
 code-line-numbers: false
 code-block-font-size: "0.85em"
@@ -54,6 +58,7 @@ using Extremes
 using Statistics
 using ColorSchemes
 using GeoMakie
+using MCMCChains
 
 using Makie.Unitful
 using Makie.Dates
